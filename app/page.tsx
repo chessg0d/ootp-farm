@@ -906,6 +906,154 @@ function AlgoTab({ analysis, cutSet }: { analysis: ReturnType<typeof analyzeOrg>
 // INSIGHTS TAB
 // ════════════════════════════════════════════════════════════
 
+// Ideal roster composition per level
+const IDEAL_ROSTER: Record<string, Record<string, { ideal: number; min: number; max: number }>> = {
+  "Rookie-DSL": {
+    C: { ideal: 3, min: 2, max: 4 }, "1B": { ideal: 2, min: 1, max: 3 }, "2B": { ideal: 2, min: 1, max: 3 },
+    SS: { ideal: 2, min: 1, max: 3 }, "3B": { ideal: 2, min: 1, max: 3 },
+    LF: { ideal: 2, min: 1, max: 3 }, CF: { ideal: 2, min: 1, max: 3 }, RF: { ideal: 2, min: 1, max: 3 },
+    SP: { ideal: 8, min: 6, max: 10 }, RP: { ideal: 6, min: 4, max: 8 }, CL: { ideal: 1, min: 0, max: 2 },
+  },
+  "Rookie-ACL": {
+    C: { ideal: 3, min: 2, max: 4 }, "1B": { ideal: 2, min: 1, max: 3 }, "2B": { ideal: 2, min: 1, max: 3 },
+    SS: { ideal: 2, min: 1, max: 3 }, "3B": { ideal: 2, min: 1, max: 3 },
+    LF: { ideal: 2, min: 1, max: 3 }, CF: { ideal: 2, min: 1, max: 3 }, RF: { ideal: 2, min: 1, max: 3 },
+    SP: { ideal: 6, min: 5, max: 8 }, RP: { ideal: 5, min: 3, max: 7 }, CL: { ideal: 1, min: 0, max: 2 },
+  },
+  "Low-A": {
+    C: { ideal: 2, min: 2, max: 3 }, "1B": { ideal: 2, min: 1, max: 2 }, "2B": { ideal: 2, min: 1, max: 2 },
+    SS: { ideal: 2, min: 1, max: 2 }, "3B": { ideal: 2, min: 1, max: 2 },
+    LF: { ideal: 2, min: 1, max: 2 }, CF: { ideal: 2, min: 1, max: 2 }, RF: { ideal: 2, min: 1, max: 2 },
+    SP: { ideal: 5, min: 5, max: 7 }, RP: { ideal: 5, min: 3, max: 6 }, CL: { ideal: 1, min: 0, max: 2 },
+  },
+  "High-A": {
+    C: { ideal: 2, min: 2, max: 3 }, "1B": { ideal: 2, min: 1, max: 2 }, "2B": { ideal: 2, min: 1, max: 2 },
+    SS: { ideal: 2, min: 1, max: 2 }, "3B": { ideal: 2, min: 1, max: 2 },
+    LF: { ideal: 2, min: 1, max: 2 }, CF: { ideal: 2, min: 1, max: 2 }, RF: { ideal: 2, min: 1, max: 2 },
+    SP: { ideal: 5, min: 5, max: 7 }, RP: { ideal: 5, min: 3, max: 6 }, CL: { ideal: 1, min: 0, max: 2 },
+  },
+  "AA": {
+    C: { ideal: 2, min: 2, max: 3 }, "1B": { ideal: 2, min: 1, max: 2 }, "2B": { ideal: 2, min: 1, max: 2 },
+    SS: { ideal: 2, min: 1, max: 2 }, "3B": { ideal: 2, min: 1, max: 2 },
+    LF: { ideal: 2, min: 1, max: 2 }, CF: { ideal: 2, min: 1, max: 2 }, RF: { ideal: 2, min: 1, max: 2 },
+    SP: { ideal: 5, min: 5, max: 7 }, RP: { ideal: 5, min: 3, max: 7 }, CL: { ideal: 1, min: 1, max: 2 },
+  },
+  "AAA": {
+    C: { ideal: 3, min: 2, max: 3 }, "1B": { ideal: 2, min: 1, max: 2 }, "2B": { ideal: 2, min: 1, max: 2 },
+    SS: { ideal: 2, min: 1, max: 2 }, "3B": { ideal: 2, min: 1, max: 2 },
+    LF: { ideal: 2, min: 1, max: 2 }, CF: { ideal: 2, min: 1, max: 2 }, RF: { ideal: 2, min: 1, max: 2 },
+    SP: { ideal: 6, min: 5, max: 8 }, RP: { ideal: 6, min: 4, max: 8 }, CL: { ideal: 1, min: 1, max: 2 },
+  },
+};
+
+const POS_ORDER = ["C", "1B", "2B", "SS", "3B", "LF", "CF", "RF", "SP", "RP", "CL"];
+const POS_GROUPS = {
+  "Infield": ["C", "1B", "2B", "SS", "3B"],
+  "Outfield": ["LF", "CF", "RF"],
+  "Starting Pitching": ["SP"],
+  "Bullpen": ["RP", "CL"],
+};
+
+type LevelReport = {
+  level: string;
+  players: Player[];
+  posCounts: Record<string, number>;
+  ideal: Record<string, { ideal: number; min: number; max: number }>;
+  totalHitters: number;
+  totalPitchers: number;
+  total: number;
+  avgPot: number;
+  avgAge: number;
+  topProspect: Player | null;
+  issues: string[];
+  strengths: string[];
+  summary: string;
+};
+
+function buildLevelReport(level: string, hitters: Player[], pitchers: Player[]): LevelReport {
+  const lvlH = hitters.filter((p) => p.Level === level);
+  const lvlP = pitchers.filter((p) => p.Level === level);
+  const players = [...lvlH, ...lvlP];
+  const total = players.length;
+  const ideal = IDEAL_ROSTER[level] || IDEAL_ROSTER["AA"];
+
+  const posCounts: Record<string, number> = {};
+  POS_ORDER.forEach((pos) => { posCounts[pos] = 0; });
+  players.forEach((p) => { posCounts[p.POS as string] = (posCounts[p.POS as string] || 0) + 1; });
+
+  const avgPot = total > 0 ? Math.round(players.reduce((s, p) => s + (p.POT as number), 0) / total) : 0;
+  const avgAge = total > 0 ? +(players.reduce((s, p) => s + (p.Age as number), 0) / total).toFixed(1) : 0;
+  const topProspect = players.length > 0
+    ? players.reduce((best, p) => (p.POT as number) > (best.POT as number) ? p : best)
+    : null;
+
+  const issues: string[] = [];
+  const strengths: string[] = [];
+
+  // Roster size
+  const target = ROSTER_TARGETS[level] || { min: 25, max: 30, ideal: 28 };
+  if (total > target.max) {
+    issues.push(`Roster is bloated at ${total} players, ${total - target.max} over the ${target.max}-man maximum. This many players means not everyone is getting meaningful development time.`);
+  } else if (total < target.min) {
+    issues.push(`Roster is dangerously thin at ${total} players, ${target.min - total} short of the ${target.min}-man minimum. You need to add players through promotions, signings, or trades.`);
+  } else {
+    strengths.push(`Roster size is healthy at ${total} players (target: ${target.min}-${target.max}).`);
+  }
+
+  // Hitter/pitcher balance
+  const hRatio = total > 0 ? lvlH.length / total : 0;
+  if (hRatio < 0.35) {
+    issues.push(`Only ${lvlH.length} position players vs ${lvlP.length} pitchers (${Math.round(hRatio * 100)}% hitters). The lineup is stretched thin and players are being forced into positions where they can't develop properly.`);
+  } else if (hRatio > 0.6) {
+    issues.push(`${lvlH.length} position players vs only ${lvlP.length} pitchers (${Math.round(hRatio * 100)}% hitters). The pitching staff is stretched too thin to cover a full season.`);
+  } else {
+    strengths.push(`Good hitter/pitcher balance at ${lvlH.length}H / ${lvlP.length}P.`);
+  }
+
+  // Per-position analysis
+  for (const pos of POS_ORDER) {
+    const count = posCounts[pos];
+    const tgt = ideal[pos];
+    if (!tgt) continue;
+
+    if (count === 0 && tgt.min > 0) {
+      issues.push(`No ${pos} on the roster. This is a critical gap — you need at least ${tgt.min}.`);
+    } else if (count < tgt.min) {
+      issues.push(`Only ${count} ${pos} (need ${tgt.min}-${tgt.max}). ${pos === "C" ? "Catchers are the hardest position to develop — you can't afford a gap here." : pos === "SP" ? "Not enough starters to fill a rotation, forcing bullpen games." : `Short at ${pos}, need to add ${tgt.min - count} more.`}`);
+    } else if (count > tgt.max) {
+      const excess = count - tgt.max;
+      if (pos === "RP") {
+        issues.push(`${count} relievers is ${excess} more than the ${tgt.max}-man max. That's ${excess} roster spot${excess > 1 ? "s" : ""} and development innings being wasted on arms that won't all advance.`);
+      } else {
+        issues.push(`${count} ${pos} is ${excess} over the ideal max of ${tgt.max}. Consider moving ${excess === 1 ? "one" : excess} to another level or releasing the lowest-upside ${pos === "C" ? "catcher" : "player"}.`);
+      }
+    }
+  }
+
+  // SP/RP ratio
+  const spCount = posCounts["SP"];
+  const rpClCount = posCounts["RP"] + posCounts["CL"];
+  if (rpClCount > 0 && spCount > 0 && rpClCount / spCount > 3) {
+    issues.push(`The bullpen outnumbers the rotation ${rpClCount} to ${spCount}. A healthy minor league affiliate should have a more balanced staff — consider converting some relievers to starters or releasing the low-upside arms.`);
+  }
+
+  // Build summary paragraph
+  let summary = "";
+  if (issues.length === 0) {
+    summary = `${level} is well-constructed with a balanced roster of ${total} players. The average potential is ${avgPot} with a healthy mix across all positions.`;
+  } else if (issues.length <= 2) {
+    summary = `${level} has ${total} players and is mostly in good shape, but has ${issues.length === 1 ? "one area" : "a couple areas"} that need attention.`;
+  } else {
+    summary = `${level} needs significant work. With ${total} players and ${issues.length} roster construction issues, this level is not set up for optimal player development.`;
+  }
+
+  if (topProspect) {
+    summary += ` The top prospect here is ${topProspect.Name} (${topProspect.POS}, POT ${topProspect.POT}).`;
+  }
+
+  return { level, players, posCounts, ideal, totalHitters: lvlH.length, totalPitchers: lvlP.length, total, avgPot, avgAge, topProspect, issues, strengths, summary };
+}
+
 function InsightsTab({
   analysis, hitters, pitchers, cutSet,
 }: {
@@ -914,73 +1062,68 @@ function InsightsTab({
   pitchers: Player[];
   cutSet: CutSet;
 }) {
+  const allPlayers = useMemo(() => [...hitters, ...pitchers], [hitters, pitchers]);
+
   // Elite prospects (POT >= 60)
   const elites = useMemo(() =>
-    [...hitters, ...pitchers]
-      .filter((p) => (p.POT as number) >= 60)
-      .sort((a, b) => (b.POT as number) - (a.POT as number)),
-  [hitters, pitchers]);
+    allPlayers.filter((p) => (p.POT as number) >= 60).sort((a, b) => (b.POT as number) - (a.POT as number)),
+  [allPlayers]);
 
   // Solid tier (POT 50-59)
   const solidTier = useMemo(() =>
-    [...hitters, ...pitchers]
-      .filter((p) => (p.POT as number) >= 50 && (p.POT as number) < 60)
-      .sort((a, b) => (b.POT as number) - (a.POT as number)),
-  [hitters, pitchers]);
+    allPlayers.filter((p) => (p.POT as number) >= 50 && (p.POT as number) < 60).sort((a, b) => (b.POT as number) - (a.POT as number)),
+  [allPlayers]);
 
-  // Level staffing stats
-  const levelStats = useMemo(() => {
+  // Per-level reports
+  const levelReports = useMemo(() => {
     const levels = ["Rookie-DSL", "Rookie-ACL", "Low-A", "High-A", "AA", "AAA"];
-    return levels.map((level) => {
-      const h = hitters.filter((p) => p.Level === level);
-      const p = pitchers.filter((pp) => pp.Level === level);
-      const total = h.length + p.length;
-      const target = ROSTER_TARGETS[level] || { min: 25, max: 30, ideal: 28 };
-      const sp = p.filter((pp) => pp.POS === "SP");
-      const rp = p.filter((pp) => pp.POS === "RP" || pp.POS === "CL");
-      const avgPot = total > 0
-        ? Math.round([...h, ...p].reduce((s, pp) => s + (pp.POT as number), 0) / total)
-        : 0;
-
-      // Position gaps
-      const keyPositions = ["C", "SS", "CF"];
-      const gaps = keyPositions.filter((pos) => !h.some((pp) => pp.POS === pos));
-
-      return { level, hitters: h.length, pitchers: p.length, total, target, sp: sp.length, rp: rp.length, avgPot, gaps };
-    }).filter((l) => l.total > 0);
+    return levels.map((l) => buildLevelReport(l, hitters, pitchers)).filter((r) => r.total > 0);
   }, [hitters, pitchers]);
 
-  // RP bloat per level
-  const rpBloat = useMemo(() =>
-    levelStats.filter((l) => l.rp > 10),
-  [levelStats]);
+  const totalIssues = levelReports.reduce((s, r) => s + r.issues.length, 0);
 
-  // Understaffed levels
-  const understaffed = useMemo(() =>
-    levelStats.filter((l) => l.total < l.target.min),
-  [levelStats]);
+  // Expand state for level cards
+  const [expandedLevels, setExpandedLevels] = useState<Set<string>>(new Set());
+  const toggleLevel = (level: string) => {
+    setExpandedLevels((prev) => {
+      const next = new Set(prev);
+      if (next.has(level)) next.delete(level); else next.add(level);
+      return next;
+    });
+  };
 
   return (
     <div className="space-y-6">
-      {/* Hero: System Health */}
+      {/* Hero */}
       <div className="bg-g-card border border-g-border rounded-xl p-6">
-        <div className="text-txt-muted text-[11px] uppercase tracking-wider mb-1">System Health Report</div>
-        <div className="text-[15px] text-txt-secondary mt-2">
-          {hitters.length + pitchers.length} players across {levelStats.length} levels — {elites.length} elite prospect{elites.length !== 1 ? "s" : ""}, {analysis.cutList.length} cut candidates, {analysis.gaps.length} position gaps
-        </div>
+        <div className="text-txt-muted text-[11px] uppercase tracking-wider mb-1">Organization Scouting Report</div>
+        <p className="text-[15px] text-txt-secondary mt-2 leading-relaxed">
+          The Royals farm system carries {allPlayers.length} minor leaguers across {levelReports.length} levels.
+          {elites.length === 0
+            ? " There are no elite-ceiling prospects (POT 60+) in the system, which is a major concern for the long-term pipeline."
+            : elites.length === 1
+            ? ` There is just ${elites.length} elite prospect in the entire system — ${elites[0].Name} (${elites[0].POS}, POT ${elites[0].POT}) — making the talent base extremely top-heavy.`
+            : ` There are ${elites.length} elite prospects (POT 60+), headlined by ${elites[0].Name} (${elites[0].POS}, POT ${elites[0].POT}).`}
+          {" "}{analysis.cutList.length > 10
+            ? `A staggering ${analysis.cutList.length} players are flagged for release, meaning roughly ${Math.round(analysis.cutList.length / allPlayers.length * 100)}% of the system is dead weight stealing development time from real prospects.`
+            : analysis.cutList.length > 0
+            ? `${analysis.cutList.length} players are flagged for release across the system.`
+            : "The roster is lean with no obvious cut candidates."}
+          {" "}{totalIssues > 8
+            ? `There are ${totalIssues} roster construction issues across all levels — this system needs a significant overhaul.`
+            : totalIssues > 3
+            ? `There are ${totalIssues} roster construction issues that should be addressed.`
+            : "Roster construction is generally solid."}
+        </p>
       </div>
 
-      {/* 1. Elite Prospects */}
+      {/* Elite Prospects */}
       <div className="bg-g-card border border-g-border rounded-xl p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <span className="text-lg">1</span>
-          <h2 className="text-[15px] font-semibold">Elite Prospects (POT 60+)</h2>
-          <span className="text-[12px] text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 px-2 py-0.5 rounded-full">
-            {elites.length} found — thin system
-          </span>
-        </div>
+        <h2 className="text-[15px] font-semibold mb-3">Franchise Cornerstones</h2>
         {elites.length === 0 ? (
-          <p className="text-red-400 text-[13px]">No elite-tier prospects in the system. Extremely concerning.</p>
+          <p className="text-[13px] text-red-400 leading-relaxed">
+            There are zero players with POT 60+ in the system. This is a franchise-level problem. Without elite-ceiling talent, even perfect player development will not produce impact major leaguers. The draft and international free agency pipeline needs to be the #1 priority.
+          </p>
         ) : (
           <div className="space-y-2">
             {elites.map((p, i) => (
@@ -988,22 +1131,24 @@ function InsightsTab({
                 <span className={`text-2xl font-bold ${potColor(p.POT as number)}`}>{p.POT as number}</span>
                 <div className="flex-1">
                   <div className="font-semibold">{p.Name as string}</div>
-                  <div className="text-[12px] text-txt-muted">{p.Level as string} — {p.POS as string} — Age {p.Age as number}</div>
+                  <div className="text-[12px] text-txt-muted">{p.Level as string} — {p.POS as string} — Age {p.Age as number} — Tools {p.ToolAvg as number}</div>
                 </div>
-                <span className="text-[12px] text-txt-muted">Tools {p.ToolAvg as number}</span>
               </div>
             ))}
           </div>
         )}
         {solidTier.length > 0 && (
           <div className="mt-4">
-            <div className="text-[12px] text-txt-muted uppercase tracking-wider mb-2">Next Tier (POT 50-59) — protect their development</div>
+            <div className="text-[12px] text-txt-muted uppercase tracking-wider mb-2">Building Blocks (POT 50-59)</div>
+            <p className="text-[13px] text-txt-secondary mb-2 leading-relaxed">
+              These {solidTier.length} players form the next tier of the system. They project as solid regulars or rotation pieces at the major league level. Protecting their at-bats and innings is critical — they should not be sharing playing time with POT 30 filler.
+            </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
               {solidTier.map((p, i) => (
                 <div key={i} className="flex items-center gap-2 text-[13px] bg-g-subtle rounded-lg px-3 py-2">
                   <span className={`font-bold w-7 text-center ${potColor(p.POT as number)}`}>{p.POT as number}</span>
                   <span className="font-medium">{p.Name as string}</span>
-                  <span className="text-txt-muted text-[11px]">{p.Level as string} — {p.POS as string} — {p.Age as number}</span>
+                  <span className="text-txt-muted text-[11px]">{p.Level as string} — {p.POS as string} — Age {p.Age as number}</span>
                 </div>
               ))}
             </div>
@@ -1011,168 +1156,181 @@ function InsightsTab({
         )}
       </div>
 
-      {/* 2. Cut Dead Weight */}
-      <div className="bg-g-card border border-g-border rounded-xl p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <span className="text-lg">2</span>
-          <h2 className="text-[15px] font-semibold">Cut Dead Weight</h2>
-          <span className="text-[12px] text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-full">
-            {analysis.cutList.length} players to release
-          </span>
-        </div>
-        <p className="text-[13px] text-txt-secondary mb-3">
-          These players are too old and/or too low-potential for their level. Releasing them frees roster spots and playing time for real prospects.
-        </p>
-        <div className="overflow-x-auto rounded-lg border border-g-border">
-          <table className="w-full text-[13px]">
-            <thead>
-              <tr className="bg-g-subtle border-b border-g-border text-txt-muted text-[10px] uppercase tracking-wider">
-                <th className="px-3 py-2 text-center w-10"></th>
-                <th className="px-3 py-2 text-left">Name</th>
-                <th className="px-3 py-2 text-left">Level</th>
-                <th className="px-3 py-2 text-center">POS</th>
-                <th className="px-3 py-2 text-center">Age</th>
-                <th className="px-3 py-2 text-center">POT</th>
-                <th className="px-3 py-2 text-left">Why</th>
-              </tr>
-            </thead>
-            <tbody>
-              {analysis.cutList
-                .sort((a, b) => (a.POT as number) - (b.POT as number) || (b.Age as number) - (a.Age as number))
-                .map((p, i) => {
-                  const isCut = cutSet.cuts.has(playerKey(p));
-                  return (
-                    <tr key={i} className={`border-b border-g-border/30 hover:bg-g-hover/30 ${isCut ? "opacity-40 line-through" : ""}`}>
-                      <td className="px-3 py-1.5 text-center"><CutBtn player={p} cutSet={cutSet} /></td>
-                      <td className="px-3 py-1.5 font-medium">{p.Name as string}</td>
-                      <td className="px-3 py-1.5 text-txt-secondary">{p.Level as string}</td>
-                      <td className="px-3 py-1.5 text-center">
-                        <span className="bg-g-subtle px-1.5 py-0.5 rounded text-[10px] font-medium">{p.POS as string}</span>
-                      </td>
-                      <td className="px-3 py-1.5 text-center">{p.Age as number}</td>
-                      <td className="px-3 py-1.5 text-center">
-                        <span className={potColor(p.POT as number)}>{p.POT as number}</span>
-                      </td>
-                      <td className="px-3 py-1.5 text-[12px]">
-                        <div className="flex gap-1 flex-wrap">
-                          {p.flags.filter((f) => f.type === "critical").map((f, j) => (
-                            <span key={j}>{flagBadge(f)}</span>
+      {/* Per-Level Roster Reports */}
+      <div>
+        <h2 className="text-lg font-semibold mb-3">Level-by-Level Roster Report</h2>
+        <div className="space-y-3">
+          {levelReports.map((report) => {
+            const isExpanded = expandedLevels.has(report.level);
+            const healthColor = report.issues.length === 0
+              ? "text-green-400"
+              : report.issues.length <= 2
+              ? "text-yellow-400"
+              : "text-red-400";
+            const healthLabel = report.issues.length === 0
+              ? "Healthy"
+              : report.issues.length <= 2
+              ? `${report.issues.length} Issue${report.issues.length > 1 ? "s" : ""}`
+              : `${report.issues.length} Issues`;
+
+            return (
+              <div key={report.level} className="bg-g-card border border-g-border rounded-xl overflow-hidden">
+                <button
+                  onClick={() => toggleLevel(report.level)}
+                  className="w-full px-5 py-4 flex items-center justify-between hover:bg-g-hover/50 transition-colors text-left"
+                >
+                  <div className="flex items-center gap-4">
+                    <div>
+                      <div className="text-[15px] font-semibold">{report.level}</div>
+                      <div className="text-[12px] text-txt-muted">
+                        {report.total} players — {report.totalHitters}H / {report.totalPitchers}P — Avg POT {report.avgPot} — Avg Age {report.avgAge}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className={`text-[12px] font-medium ${healthColor}`}>{healthLabel}</span>
+                    <span className="text-txt-muted text-lg">{isExpanded ? "−" : "+"}</span>
+                  </div>
+                </button>
+
+                {isExpanded && (
+                  <div className="border-t border-g-border px-5 py-4 space-y-5">
+                    {/* Summary */}
+                    <p className="text-[13px] text-txt-secondary leading-relaxed">{report.summary}</p>
+
+                    {/* Position Grid */}
+                    {Object.entries(POS_GROUPS).map(([groupName, positions]) => (
+                      <div key={groupName}>
+                        <div className="text-[11px] text-txt-muted uppercase tracking-wider mb-2">{groupName}</div>
+                        <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
+                          {positions.map((pos) => {
+                            const count = report.posCounts[pos] || 0;
+                            const tgt = report.ideal[pos];
+                            if (!tgt) return null;
+                            const isLow = count < tgt.min;
+                            const isHigh = count > tgt.max;
+                            const isEmpty = count === 0 && tgt.min > 0;
+                            const bg = isEmpty
+                              ? "bg-red-500/20 border-red-500/40"
+                              : isLow
+                              ? "bg-yellow-500/15 border-yellow-500/30"
+                              : isHigh
+                              ? "bg-orange-500/15 border-orange-500/30"
+                              : "bg-g-subtle border-g-border";
+                            return (
+                              <div key={pos} className={`rounded-lg border px-3 py-2 text-center ${bg}`}>
+                                <div className="text-[10px] text-txt-muted font-medium">{pos}</div>
+                                <div className={`text-[18px] font-bold ${isEmpty || isLow ? "text-red-400" : isHigh ? "text-orange-400" : "text-txt"}`}>
+                                  {count}
+                                </div>
+                                <div className="text-[9px] text-txt-muted">ideal {tgt.ideal} ({tgt.min}-{tgt.max})</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+
+                    {/* Issues */}
+                    {report.issues.length > 0 && (
+                      <div>
+                        <div className="text-[11px] text-red-400 uppercase tracking-wider mb-2">Issues ({report.issues.length})</div>
+                        <div className="space-y-2">
+                          {report.issues.map((issue, i) => (
+                            <div key={i} className="flex items-start gap-2 text-[13px] bg-red-500/5 rounded-lg px-3 py-2">
+                              <span className="text-red-400 mt-0.5 shrink-0">!</span>
+                              <span className="text-txt-secondary leading-relaxed">{issue}</span>
+                            </div>
                           ))}
                         </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-            </tbody>
-          </table>
-        </div>
-        {/* Breakdown by level */}
-        <div className="mt-3 flex gap-2 flex-wrap">
-          {levelStats.map((l) => {
-            const cutsAtLevel = analysis.cutList.filter((p) => p.Level === l.level).length;
-            if (cutsAtLevel === 0) return null;
-            return (
-              <span key={l.level} className="text-[11px] bg-red-500/10 text-red-400 border border-red-500/20 px-2 py-0.5 rounded-full">
-                {l.level}: {cutsAtLevel}
-              </span>
+                      </div>
+                    )}
+
+                    {/* Strengths */}
+                    {report.strengths.length > 0 && (
+                      <div>
+                        <div className="text-[11px] text-green-400 uppercase tracking-wider mb-2">Strengths</div>
+                        <div className="space-y-1.5">
+                          {report.strengths.map((s, i) => (
+                            <div key={i} className="flex items-start gap-2 text-[13px] bg-green-500/5 rounded-lg px-3 py-2">
+                              <span className="text-green-400 mt-0.5 shrink-0">+</span>
+                              <span className="text-txt-secondary">{s}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
       </div>
 
-      {/* 3. Understaffed Levels */}
-      {understaffed.length > 0 && (
+      {/* Cut List */}
+      {analysis.cutList.length > 0 && (
         <div className="bg-g-card border border-g-border rounded-xl p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <span className="text-lg">3</span>
-            <h2 className="text-[15px] font-semibold">Understaffed Levels</h2>
-            <span className="text-[12px] text-orange-400 bg-orange-500/10 border border-orange-500/20 px-2 py-0.5 rounded-full">
-              {understaffed.length} level{understaffed.length !== 1 ? "s" : ""} below minimum
-            </span>
-          </div>
-          <div className="space-y-2">
-            {understaffed.map((l) => (
-              <div key={l.level} className="flex items-center justify-between bg-orange-500/5 border border-orange-500/10 rounded-lg px-4 py-3">
-                <div>
-                  <div className="font-semibold text-[14px]">{l.level}</div>
-                  <div className="text-[12px] text-txt-muted">
-                    {l.total} players ({l.hitters}H / {l.pitchers}P) — target {l.target.min}-{l.target.max}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-orange-400 text-[13px] font-medium">{l.target.min - l.total} players short</div>
-                  {l.gaps.length > 0 && (
-                    <div className="text-[11px] text-red-400">Missing: {l.gaps.join(", ")}</div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 4. Position Gaps */}
-      {analysis.gaps.length > 0 && (
-        <div className="bg-g-card border border-g-border rounded-xl p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <span className="text-lg">4</span>
-            <h2 className="text-[15px] font-semibold">Position Gaps</h2>
-            <span className="text-[12px] text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-full">
-              {analysis.gaps.length} gaps
-            </span>
-          </div>
-          <p className="text-[13px] text-txt-secondary mb-3">
-            Positions to target in the draft, IFA, or trades.
+          <h2 className="text-[15px] font-semibold mb-2">Cut List ({analysis.cutList.length})</h2>
+          <p className="text-[13px] text-txt-secondary mb-3 leading-relaxed">
+            {analysis.cutList.length > 15
+              ? `The system is carrying ${analysis.cutList.length} players who should be released immediately. That's ${Math.round(analysis.cutList.length / allPlayers.length * 100)}% of the entire org — every one of these players is taking at-bats, innings, or a roster spot away from someone with actual upside. The majority are low-ceiling relievers clogging the Rookie and Low-A levels.`
+              : analysis.cutList.length > 5
+              ? `${analysis.cutList.length} players should be released to free up roster spots and development time. Most are too old for their level, too low-potential to project, or both.`
+              : `A small group of ${analysis.cutList.length} players are flagged for release based on age and potential.`}
           </p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-            {analysis.gaps.map((g, i) => (
-              <div key={i} className="bg-g-subtle border border-g-border rounded-lg px-3 py-2 flex items-center gap-2">
-                <span className="bg-red-500/20 text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded text-[10px] font-semibold">
-                  {g.pos}
-                </span>
-                <span className="text-[13px] text-txt-secondary">{g.level}</span>
-              </div>
-            ))}
+          <div className="overflow-x-auto rounded-lg border border-g-border">
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="bg-g-subtle border-b border-g-border text-txt-muted text-[10px] uppercase tracking-wider">
+                  <th className="px-3 py-2 text-center w-10"></th>
+                  <th className="px-3 py-2 text-left">Name</th>
+                  <th className="px-3 py-2 text-left">Level</th>
+                  <th className="px-3 py-2 text-center">POS</th>
+                  <th className="px-3 py-2 text-center">Age</th>
+                  <th className="px-3 py-2 text-center">POT</th>
+                  <th className="px-3 py-2 text-left">Why</th>
+                </tr>
+              </thead>
+              <tbody>
+                {analysis.cutList
+                  .sort((a, b) => (a.POT as number) - (b.POT as number) || (b.Age as number) - (a.Age as number))
+                  .map((p, i) => {
+                    const isCut = cutSet.cuts.has(playerKey(p));
+                    return (
+                      <tr key={i} className={`border-b border-g-border/30 hover:bg-g-hover/30 ${isCut ? "opacity-40 line-through" : ""}`}>
+                        <td className="px-3 py-1.5 text-center"><CutBtn player={p} cutSet={cutSet} /></td>
+                        <td className="px-3 py-1.5 font-medium">{p.Name as string}</td>
+                        <td className="px-3 py-1.5 text-txt-secondary">{p.Level as string}</td>
+                        <td className="px-3 py-1.5 text-center">
+                          <span className="bg-g-subtle px-1.5 py-0.5 rounded text-[10px] font-medium">{p.POS as string}</span>
+                        </td>
+                        <td className="px-3 py-1.5 text-center">{p.Age as number}</td>
+                        <td className="px-3 py-1.5 text-center">
+                          <span className={potColor(p.POT as number)}>{p.POT as number}</span>
+                        </td>
+                        <td className="px-3 py-1.5 text-[12px]">
+                          <div className="flex gap-1 flex-wrap">
+                            {p.flags.filter((f) => f.type === "critical").map((f, j) => (
+                              <span key={j}>{flagBadge(f)}</span>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
 
-      {/* 5. RP Bloat */}
-      {rpBloat.length > 0 && (
-        <div className="bg-g-card border border-g-border rounded-xl p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <span className="text-lg">5</span>
-            <h2 className="text-[15px] font-semibold">Reliever Bloat</h2>
-          </div>
-          <p className="text-[13px] text-txt-secondary mb-3">
-            These levels carry an excessive number of relievers, stealing development innings from real prospects.
-          </p>
-          <div className="space-y-2">
-            {rpBloat.map((l) => (
-              <div key={l.level} className="flex items-center justify-between bg-g-subtle rounded-lg px-4 py-3">
-                <div>
-                  <div className="font-semibold text-[14px]">{l.level}</div>
-                  <div className="text-[12px] text-txt-muted">{l.sp} SP / {l.rp} RP+CL — {l.total} total</div>
-                </div>
-                <div className="text-orange-400 text-[13px] font-medium">{l.rp - 8} excess relievers</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 6. Promote Candidates */}
+      {/* Promote Candidates */}
       {analysis.promoteCandidates.length > 0 && (
         <div className="bg-g-card border border-g-border rounded-xl p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <span className="text-lg">6</span>
-            <h2 className="text-[15px] font-semibold">Promotion Candidates</h2>
-            <span className="text-[12px] text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-full">
-              {analysis.promoteCandidates.length} ready
-            </span>
-          </div>
-          <p className="text-[13px] text-txt-secondary mb-3">
-            Players who may be ready for a level bump based on age and potential.
+          <h2 className="text-[15px] font-semibold mb-2">Promotion Candidates ({analysis.promoteCandidates.length})</h2>
+          <p className="text-[13px] text-txt-secondary mb-3 leading-relaxed">
+            These players have outgrown their current level based on age and potential. Promoting them would help fill gaps at higher levels while giving them a better development environment.
           </p>
           <div className="space-y-1">
             {analysis.promoteCandidates
@@ -1184,41 +1342,51 @@ function InsightsTab({
                   <span className="text-txt-muted">{p.Level as string}</span>
                   <span className="text-txt-muted">Age {p.Age as number}</span>
                   <span className={potColor(p.POT as number)}>POT {p.POT as number}</span>
-                  <div className="flex gap-1">
-                    {p.flags.filter((f) => f.tag === "PROMOTE").map((f, j) => (
-                      <span key={j}>{flagBadge(f)}</span>
-                    ))}
-                  </div>
                 </div>
               ))}
           </div>
         </div>
       )}
 
-      {/* 7. Pipeline Funnel */}
+      {/* Pipeline Funnel */}
       <div className="bg-g-card border border-g-border rounded-xl p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <span className="text-lg">7</span>
-          <h2 className="text-[15px] font-semibold">Pipeline Funnel</h2>
-        </div>
-        <p className="text-[13px] text-txt-secondary mb-3">
-          How player counts change level-to-level. Sharp drops may indicate aggressive attrition or failure to promote.
+        <h2 className="text-[15px] font-semibold mb-2">Pipeline Funnel</h2>
+        <p className="text-[13px] text-txt-secondary mb-3 leading-relaxed">
+          {(() => {
+            const dsl = levelReports.find((r) => r.level === "Rookie-DSL");
+            const aaa = levelReports.find((r) => r.level === "AAA");
+            const highA = levelReports.find((r) => r.level === "High-A");
+            const lowA = levelReports.find((r) => r.level === "Low-A");
+            let text = "";
+            if (dsl && aaa) {
+              text += `The system funnels from ${dsl.total} players at Rookie-DSL down to ${aaa.total} at AAA. `;
+            }
+            if (lowA && highA && lowA.total - highA.total > 10) {
+              text += `The sharpest drop-off is between Low-A (${lowA.total}) and High-A (${highA.total}), a loss of ${lowA.total - highA.total} players — this could indicate overly aggressive attrition or a failure to promote ready players. `;
+            }
+            const thinLevels = levelReports.filter((r) => r.total < (ROSTER_TARGETS[r.level]?.min || 25));
+            if (thinLevels.length > 0) {
+              text += `${thinLevels.map((l) => l.level).join(" and ")} ${thinLevels.length === 1 ? "is" : "are"} running below minimum roster size.`;
+            }
+            return text || "The pipeline is evenly distributed across all levels.";
+          })()}
         </p>
         <div className="flex items-end gap-2">
-          {levelStats.map((l, i) => {
-            const maxTotal = Math.max(...levelStats.map((ll) => ll.total));
-            const pct = (l.total / maxTotal) * 100;
-            const prevTotal = i > 0 ? levelStats[i - 1].total : null;
-            const drop = prevTotal ? prevTotal - l.total : null;
+          {levelReports.map((report, i) => {
+            const maxTotal = Math.max(...levelReports.map((r) => r.total));
+            const pct = (report.total / maxTotal) * 100;
+            const prevTotal = i > 0 ? levelReports[i - 1].total : null;
+            const drop = prevTotal ? prevTotal - report.total : null;
+            const target = ROSTER_TARGETS[report.level] || { min: 25 };
             return (
-              <div key={l.level} className="flex-1 flex flex-col items-center gap-1">
-                <div className="text-[12px] font-semibold">{l.total}</div>
+              <div key={report.level} className="flex-1 flex flex-col items-center gap-1">
+                <div className="text-[12px] font-semibold">{report.total}</div>
                 <div
-                  className={`w-full rounded-t-lg ${l.total < l.target.min ? "bg-orange-500/40" : "bg-accent/30"}`}
+                  className={`w-full rounded-t-lg ${report.total < target.min ? "bg-orange-500/40" : "bg-accent/30"}`}
                   style={{ height: `${Math.max(pct * 1.5, 12)}px` }}
                 />
-                <div className="text-[10px] text-txt-muted text-center leading-tight">{l.level.replace("Rookie-", "R-")}</div>
-                {drop !== null && drop > 15 && (
+                <div className="text-[10px] text-txt-muted text-center leading-tight">{report.level.replace("Rookie-", "R-")}</div>
+                {drop !== null && drop > 10 && (
                   <div className="text-[10px] text-red-400">-{drop}</div>
                 )}
               </div>
