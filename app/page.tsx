@@ -967,91 +967,225 @@ type LevelReport = {
   topProspect: Player | null;
   issues: string[];
   strengths: string[];
+  actions: string[];
   summary: string;
 };
 
-function buildLevelReport(level: string, hitters: Player[], pitchers: Player[]): LevelReport {
-  const lvlH = hitters.filter((p) => p.Level === level);
-  const lvlP = pitchers.filter((p) => p.Level === level);
-  const players = [...lvlH, ...lvlP];
-  const total = players.length;
-  const ideal = IDEAL_ROSTER[level] || IDEAL_ROSTER["AA"];
+function buildLevelReports(hitters: Player[], pitchers: Player[]): LevelReport[] {
+  const levels = ["Rookie-DSL", "Rookie-ACL", "Low-A", "High-A", "AA", "AAA"];
 
-  const posCounts: Record<string, number> = {};
-  POS_ORDER.forEach((pos) => { posCounts[pos] = 0; });
-  players.forEach((p) => { posCounts[p.POS as string] = (posCounts[p.POS as string] || 0) + 1; });
-
-  const avgPot = total > 0 ? Math.round(players.reduce((s, p) => s + (p.POT as number), 0) / total) : 0;
-  const avgAge = total > 0 ? +(players.reduce((s, p) => s + (p.Age as number), 0) / total).toFixed(1) : 0;
-  const topProspect = players.length > 0
-    ? players.reduce((best, p) => (p.POT as number) > (best.POT as number) ? p : best)
-    : null;
-
-  const issues: string[] = [];
-  const strengths: string[] = [];
-
-  // Roster size
-  const target = ROSTER_TARGETS[level] || { min: 25, max: 30, ideal: 28 };
-  if (total > target.max) {
-    issues.push(`Roster is bloated at ${total} players, ${total - target.max} over the ${target.max}-man maximum. This many players means not everyone is getting meaningful development time.`);
-  } else if (total < target.min) {
-    issues.push(`Roster is dangerously thin at ${total} players, ${target.min - total} short of the ${target.min}-man minimum. You need to add players through promotions, signings, or trades.`);
-  } else {
-    strengths.push(`Roster size is healthy at ${total} players (target: ${target.min}-${target.max}).`);
+  // Pre-compute per-level data for cross-level recommendations
+  const levelData: Record<string, { hitters: Player[]; pitchers: Player[]; posCounts: Record<string, number> }> = {};
+  for (const level of levels) {
+    const h = hitters.filter((p) => p.Level === level);
+    const pit = pitchers.filter((p) => p.Level === level);
+    const posCounts: Record<string, number> = {};
+    POS_ORDER.forEach((pos) => { posCounts[pos] = 0; });
+    [...h, ...pit].forEach((p) => { posCounts[p.POS as string] = (posCounts[p.POS as string] || 0) + 1; });
+    levelData[level] = { hitters: h, pitchers: pit, posCounts };
   }
 
-  // Hitter/pitcher balance
-  const hRatio = total > 0 ? lvlH.length / total : 0;
-  if (hRatio < 0.35) {
-    issues.push(`Only ${lvlH.length} position players vs ${lvlP.length} pitchers (${Math.round(hRatio * 100)}% hitters). The lineup is stretched thin and players are being forced into positions where they can't develop properly.`);
-  } else if (hRatio > 0.6) {
-    issues.push(`${lvlH.length} position players vs only ${lvlP.length} pitchers (${Math.round(hRatio * 100)}% hitters). The pitching staff is stretched too thin to cover a full season.`);
-  } else {
-    strengths.push(`Good hitter/pitcher balance at ${lvlH.length}H / ${lvlP.length}P.`);
-  }
+  // Next level up for promotion recommendations
+  const nextLevel: Record<string, string> = {
+    "Rookie-DSL": "Rookie-ACL", "Rookie-ACL": "Low-A", "Low-A": "High-A",
+    "High-A": "AA", "AA": "AAA",
+  };
 
-  // Per-position analysis
-  for (const pos of POS_ORDER) {
-    const count = posCounts[pos];
-    const tgt = ideal[pos];
-    if (!tgt) continue;
+  return levels.map((level) => {
+    const { hitters: lvlH, pitchers: lvlP, posCounts } = levelData[level];
+    const players = [...lvlH, ...lvlP];
+    const total = players.length;
+    const ideal = IDEAL_ROSTER[level] || IDEAL_ROSTER["AA"];
 
-    if (count === 0 && tgt.min > 0) {
-      issues.push(`No ${pos} on the roster. This is a critical gap — you need at least ${tgt.min}.`);
-    } else if (count < tgt.min) {
-      issues.push(`Only ${count} ${pos} (need ${tgt.min}-${tgt.max}). ${pos === "C" ? "Catchers are the hardest position to develop — you can't afford a gap here." : pos === "SP" ? "Not enough starters to fill a rotation, forcing bullpen games." : `Short at ${pos}, need to add ${tgt.min - count} more.`}`);
-    } else if (count > tgt.max) {
-      const excess = count - tgt.max;
-      if (pos === "RP") {
-        issues.push(`${count} relievers is ${excess} more than the ${tgt.max}-man max. That's ${excess} roster spot${excess > 1 ? "s" : ""} and development innings being wasted on arms that won't all advance.`);
-      } else {
-        issues.push(`${count} ${pos} is ${excess} over the ideal max of ${tgt.max}. Consider moving ${excess === 1 ? "one" : excess} to another level or releasing the lowest-upside ${pos === "C" ? "catcher" : "player"}.`);
+    const avgPot = total > 0 ? Math.round(players.reduce((s, p) => s + (p.POT as number), 0) / total) : 0;
+    const avgAge = total > 0 ? +(players.reduce((s, p) => s + (p.Age as number), 0) / total).toFixed(1) : 0;
+    const topProspect = players.length > 0
+      ? players.reduce((best, p) => (p.POT as number) > (best.POT as number) ? p : best)
+      : null;
+
+    const issues: string[] = [];
+    const strengths: string[] = [];
+    const actions: string[] = [];
+
+    const ageCap = AGE_CAPS[level] || 99;
+    const ageIdeal = AGE_IDEAL[level] || [17, 28];
+    const potFloor = POT_FLOOR[level] || 30;
+
+    // Roster size
+    const target = ROSTER_TARGETS[level] || { min: 25, max: 30, ideal: 28 };
+    if (total > target.max) {
+      const excess = total - target.max;
+      issues.push(`Roster is bloated at ${total} players, ${excess} over the ${target.max}-man maximum. Not everyone is getting meaningful development time.`);
+      // Find specific cut candidates — old + low POT
+      const cutCandidates = players
+        .filter((p) => (p.POT as number) <= potFloor && (p.Age as number) >= ageIdeal[1])
+        .sort((a, b) => (a.POT as number) - (b.POT as number) || (b.Age as number) - (a.Age as number));
+      if (cutCandidates.length > 0) {
+        const names = cutCandidates.slice(0, 5).map((p) => `${p.Name} (${p.POS}, ${p.Age}, POT ${p.POT})`);
+        actions.push(`Release ${cutCandidates.length > 5 ? `at least ${cutCandidates.length} players` : "these players"} to get under the cap: ${names.join(", ")}${cutCandidates.length > 5 ? `, and ${cutCandidates.length - 5} more.` : "."}`);
+      }
+    } else if (total < target.min) {
+      const deficit = target.min - total;
+      issues.push(`Roster is dangerously thin at ${total} players, ${deficit} short of the ${target.min}-man minimum.`);
+      // Look at level below for promote candidates
+      const prevLevel = Object.entries(nextLevel).find(([, v]) => v === level)?.[0];
+      if (prevLevel && levelData[prevLevel]) {
+        const promoCandidates = [...levelData[prevLevel].hitters, ...levelData[prevLevel].pitchers]
+          .filter((p) => (p.POT as number) >= potFloor && (p.Age as number) >= ageIdeal[0])
+          .sort((a, b) => (b.POT as number) - (a.POT as number));
+        if (promoCandidates.length > 0) {
+          const names = promoCandidates.slice(0, 4).map((p) => `${p.Name} (${p.POS}, POT ${p.POT})`);
+          actions.push(`Promote from ${prevLevel} to fill the gap: ${names.join(", ")}.`);
+        }
+      }
+    } else {
+      strengths.push(`Roster size is healthy at ${total} players (target: ${target.min}-${target.max}).`);
+    }
+
+    // Hitter/pitcher balance
+    const hRatio = total > 0 ? lvlH.length / total : 0;
+    if (hRatio < 0.35) {
+      issues.push(`Only ${lvlH.length} position players vs ${lvlP.length} pitchers (${Math.round(hRatio * 100)}% hitters). The lineup is stretched thin.`);
+    } else if (hRatio > 0.6) {
+      issues.push(`${lvlH.length} position players vs only ${lvlP.length} pitchers. The pitching staff cannot cover a full season.`);
+    } else {
+      strengths.push(`Good hitter/pitcher balance at ${lvlH.length}H / ${lvlP.length}P.`);
+    }
+
+    // Per-position analysis with specific player recommendations
+    for (const pos of POS_ORDER) {
+      const count = posCounts[pos];
+      const tgt = ideal[pos];
+      if (!tgt) continue;
+
+      const playersAtPos = players.filter((p) => (p.POS as string) === pos);
+
+      if (count === 0 && tgt.min > 0) {
+        issues.push(`Zero ${pos} on the roster — critical gap.`);
+        // Look for players at this position in adjacent levels
+        const up = nextLevel[level];
+        const prevLevel = Object.entries(nextLevel).find(([, v]) => v === level)?.[0];
+        const sources: string[] = [];
+        if (prevLevel && levelData[prevLevel]) {
+          const candidates = [...levelData[prevLevel].hitters, ...levelData[prevLevel].pitchers]
+            .filter((p) => (p.POS as string) === pos).sort((a, b) => (b.POT as number) - (a.POT as number));
+          if (candidates.length > 1) {
+            sources.push(`promote ${candidates[0].Name} (POT ${candidates[0].POT}, Age ${candidates[0].Age}) from ${prevLevel} — they have ${candidates.length} ${pos} and can spare one`);
+          }
+        }
+        if (up && levelData[up]) {
+          const abovePlayers = [...levelData[up].hitters, ...levelData[up].pitchers]
+            .filter((p) => (p.POS as string) === pos);
+          if (abovePlayers.length > (IDEAL_ROSTER[up]?.[pos]?.max || 2)) {
+            const worst = abovePlayers.sort((a, b) => (a.POT as number) - (b.POT as number))[0];
+            sources.push(`send down ${worst.Name} (POT ${worst.POT}) from ${up} where they have ${abovePlayers.length} ${pos}`);
+          }
+        }
+        if (sources.length > 0) {
+          actions.push(`Fill the ${pos} gap: ${sources.join(", or ")}.`);
+        } else {
+          actions.push(`Need to acquire a ${pos} through trade, FA, or draft — no internal candidates available.`);
+        }
+      } else if (count < tgt.min) {
+        issues.push(`Only ${count} ${pos} (need ${tgt.min}-${tgt.max}).${pos === "C" ? " Catchers are the hardest position to develop." : pos === "SP" ? " Not enough starters to fill a rotation." : ""}`);
+      } else if (count > tgt.max) {
+        const excess = count - tgt.max;
+        // Name the weakest players who should go
+        const weakest = playersAtPos.sort((a, b) => (a.POT as number) - (b.POT as number)).slice(0, excess);
+        if (pos === "RP") {
+          issues.push(`${count} relievers is ${excess} over the ${tgt.max}-man max — that is ${excess} roster spot${excess > 1 ? "s" : ""} and development innings being wasted.`);
+          const rpCuts = playersAtPos
+            .filter((p) => (p.POT as number) <= potFloor)
+            .sort((a, b) => (a.POT as number) - (b.POT as number) || (b.Age as number) - (a.Age as number));
+          if (rpCuts.length > 0) {
+            const names = rpCuts.slice(0, 6).map((p) => `${p.Name} (Age ${p.Age}, POT ${p.POT})`);
+            actions.push(`Release the bottom-of-the-barrel relievers: ${names.join(", ")}${rpCuts.length > 6 ? `, plus ${rpCuts.length - 6} more` : ""}.`);
+          }
+        } else {
+          issues.push(`${count} ${pos} is ${excess} over the max of ${tgt.max}.`);
+          if (weakest.length > 0) {
+            const up = nextLevel[level];
+            const upNeeds = up && levelData[up] ? (levelData[up].posCounts[pos] || 0) < (IDEAL_ROSTER[up]?.[pos]?.min || 1) : false;
+            if (upNeeds) {
+              const best = playersAtPos.sort((a, b) => (b.POT as number) - (a.POT as number))[0];
+              actions.push(`Promote ${best.Name} (POT ${best.POT}) to ${up} — they need a ${pos} and you have a surplus.`);
+            } else {
+              actions.push(`Release or demote ${weakest.map((p) => `${p.Name} (POT ${p.POT})`).join(", ")} — weakest ${pos}${excess > 1 ? "s" : ""} at this level.`);
+            }
+          }
+        }
       }
     }
-  }
 
-  // SP/RP ratio
-  const spCount = posCounts["SP"];
-  const rpClCount = posCounts["RP"] + posCounts["CL"];
-  if (rpClCount > 0 && spCount > 0 && rpClCount / spCount > 3) {
-    issues.push(`The bullpen outnumbers the rotation ${rpClCount} to ${spCount}. A healthy minor league affiliate should have a more balanced staff — consider converting some relievers to starters or releasing the low-upside arms.`);
-  }
+    // SP/RP ratio
+    const spCount = posCounts["SP"];
+    const rpClCount = posCounts["RP"] + posCounts["CL"];
+    if (rpClCount > 0 && spCount > 0 && rpClCount / spCount > 3) {
+      issues.push(`The bullpen outnumbers the rotation ${rpClCount} to ${spCount}. A healthy affiliate should have a more balanced staff.`);
+      // Find best RP who could convert
+      const convertCandidates = lvlP.filter((p) => (p.POS as string) === "RP" && (p.POT as number) >= 40 && (p.Age as number) <= ageIdeal[1])
+        .sort((a, b) => (b.POT as number) - (a.POT as number));
+      if (convertCandidates.length > 0 && spCount < (ideal["SP"]?.min || 5)) {
+        const names = convertCandidates.slice(0, 2).map((p) => `${p.Name} (POT ${p.POT})`);
+        actions.push(`Consider converting to SP: ${names.join(", ")} — they have the upside to start and you need rotation depth.`);
+      }
+    }
 
-  // Build summary paragraph
-  let summary = "";
-  if (issues.length === 0) {
-    summary = `${level} is well-constructed with a balanced roster of ${total} players. The average potential is ${avgPot} with a healthy mix across all positions.`;
-  } else if (issues.length <= 2) {
-    summary = `${level} has ${total} players and is mostly in good shape, but has ${issues.length === 1 ? "one area" : "a couple areas"} that need attention.`;
-  } else {
-    summary = `${level} needs significant work. With ${total} players and ${issues.length} roster construction issues, this level is not set up for optimal player development.`;
-  }
+    // Old players wasting spots
+    const tooOld = players.filter((p) => (p.Age as number) > ageCap && (p.POT as number) < 45);
+    if (tooOld.length > 0) {
+      const names = tooOld.slice(0, 4).map((p) => `${p.Name} (${p.POS}, Age ${p.Age}, POT ${p.POT})`);
+      actions.push(`These players are too old for ${level} and blocking younger talent: ${names.join(", ")}${tooOld.length > 4 ? `, and ${tooOld.length - 4} more` : ""}. Promote or release.`);
+    }
 
-  if (topProspect) {
-    summary += ` The top prospect here is ${topProspect.Name} (${topProspect.POS}, POT ${topProspect.POT}).`;
-  }
+    // Young high-upside players stuck behind older low-upside players at same position
+    for (const pos of POS_ORDER) {
+      const atPos = players.filter((p) => (p.POS as string) === pos);
+      if (atPos.length < 2) continue;
+      const youngStar = atPos.find((p) => (p.POT as number) >= 50 && (p.Age as number) <= ageIdeal[0] + 1);
+      const oldBlock = atPos.find((p) => (p.POT as number) < 40 && (p.Age as number) >= ageIdeal[1]);
+      if (youngStar && oldBlock) {
+        actions.push(`${youngStar.Name} (POT ${youngStar.POT}, Age ${youngStar.Age}) is sharing ${pos} reps with ${oldBlock.Name} (POT ${oldBlock.POT}, Age ${oldBlock.Age}). Release or move ${oldBlock.Name} so ${youngStar.Name} gets full development time.`);
+      }
+    }
 
-  return { level, players, posCounts, ideal, totalHitters: lvlH.length, totalPitchers: lvlP.length, total, avgPot, avgAge, topProspect, issues, strengths, summary };
+    // High-POT players who should be promoted
+    const promoReady = players.filter((p) => {
+      const pot = p.POT as number;
+      const age = p.Age as number;
+      return pot >= 45 && age > ageIdeal[1] && nextLevel[level];
+    }).sort((a, b) => (b.POT as number) - (a.POT as number));
+    if (promoReady.length > 0) {
+      const up = nextLevel[level]!;
+      for (const p of promoReady.slice(0, 3)) {
+        const upData = levelData[up];
+        const upCountAtPos = upData ? upData.posCounts[p.POS as string] || 0 : 0;
+        const upIdeal = IDEAL_ROSTER[up]?.[p.POS as string];
+        const upNeedsPos = upIdeal ? upCountAtPos < upIdeal.ideal : false;
+        if (upNeedsPos) {
+          actions.push(`Promote ${p.Name} (${p.POS}, POT ${p.POT}, Age ${p.Age}) to ${up} — ${up} needs a ${p.POS} and ${p.Name} has outgrown ${level}.`);
+        } else {
+          actions.push(`${p.Name} (${p.POS}, POT ${p.POT}, Age ${p.Age}) is ready for ${up}. At ${p.Age} years old, keeping them at ${level} is wasting prime development years.`);
+        }
+      }
+    }
+
+    // Build summary
+    let summary = "";
+    if (issues.length === 0 && actions.length === 0) {
+      summary = `${level} is well-constructed with a balanced roster of ${total} players and an average potential of ${avgPot}. No major moves needed — focus on steady development.`;
+    } else if (issues.length <= 2) {
+      summary = `${level} has ${total} players and is mostly in good shape, but has ${issues.length === 1 ? "one area" : "a couple areas"} that need attention. Average potential is ${avgPot} with an average age of ${avgAge}.`;
+    } else {
+      summary = `${level} needs significant work. There are ${issues.length} roster construction problems here, and ${actions.length > 0 ? `${actions.length} specific moves to make` : "the talent level is thin"}. Average potential is just ${avgPot}.`;
+    }
+
+    if (topProspect) {
+      summary += ` The top prospect is ${topProspect.Name} (${topProspect.POS}, POT ${topProspect.POT}, Age ${topProspect.Age})${(topProspect.POT as number) >= 60 ? " — a franchise-caliber talent who must be the development priority here" : (topProspect.POT as number) >= 50 ? " — a legitimate prospect who needs consistent playing time" : ""}.`;
+    }
+
+    return { level, players, posCounts, ideal, totalHitters: lvlH.length, totalPitchers: lvlP.length, total, avgPot, avgAge, topProspect, issues, strengths, actions, summary };
+  }).filter((r) => r.total > 0);
 }
 
 function InsightsTab({
@@ -1075,10 +1209,7 @@ function InsightsTab({
   [allPlayers]);
 
   // Per-level reports
-  const levelReports = useMemo(() => {
-    const levels = ["Rookie-DSL", "Rookie-ACL", "Low-A", "High-A", "AA", "AAA"];
-    return levels.map((l) => buildLevelReport(l, hitters, pitchers)).filter((r) => r.total > 0);
-  }, [hitters, pitchers]);
+  const levelReports = useMemo(() => buildLevelReports(hitters, pitchers), [hitters, pitchers]);
 
   const totalIssues = levelReports.reduce((s, r) => s + r.issues.length, 0);
 
@@ -1169,9 +1300,7 @@ function InsightsTab({
               : "text-red-400";
             const healthLabel = report.issues.length === 0
               ? "Healthy"
-              : report.issues.length <= 2
-              ? `${report.issues.length} Issue${report.issues.length > 1 ? "s" : ""}`
-              : `${report.issues.length} Issues`;
+              : `${report.issues.length} Issue${report.issues.length > 1 ? "s" : ""}${report.actions.length > 0 ? ` / ${report.actions.length} Move${report.actions.length > 1 ? "s" : ""}` : ""}`;
 
             return (
               <div key={report.level} className="bg-g-card border border-g-border rounded-xl overflow-hidden">
@@ -1240,6 +1369,21 @@ function InsightsTab({
                             <div key={i} className="flex items-start gap-2 text-[13px] bg-red-500/5 rounded-lg px-3 py-2">
                               <span className="text-red-400 mt-0.5 shrink-0">!</span>
                               <span className="text-txt-secondary leading-relaxed">{issue}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Actions */}
+                    {report.actions.length > 0 && (
+                      <div>
+                        <div className="text-[11px] text-accent uppercase tracking-wider mb-2">Recommended Moves ({report.actions.length})</div>
+                        <div className="space-y-2">
+                          {report.actions.map((action, i) => (
+                            <div key={i} className="flex items-start gap-2 text-[13px] bg-accent/5 border border-accent/10 rounded-lg px-3 py-2">
+                              <span className="text-accent mt-0.5 shrink-0 font-bold">{i + 1}.</span>
+                              <span className="text-txt-secondary leading-relaxed">{action}</span>
                             </div>
                           ))}
                         </div>
