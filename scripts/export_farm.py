@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export OOTP S+ CSV roster files to JSON for the farm viewer.
+"""Export OOTP roster CSV to JSON for the farm viewer.
 
 Usage:
   source ~/farm_venv/bin/activate && python scripts/export_farm.py
@@ -7,65 +7,79 @@ Usage:
 
 import json
 import pandas as pd
+import numpy as np
 from pathlib import Path
 
-CSV_FOLDER = Path.home() / "Application Support/Out of the Park Developments/OOTP Baseball 27/saved_games/The League.lg/import_export"
+CSV_PATH = Path.home() / "Application Support/Out of the Park Developments/OOTP Baseball 27/saved_games/The League.lg/import_export/kansas_city_royals_organization_-_roster_default.csv"
 OUTPUT = Path(__file__).resolve().parent.parent / "data" / "farm.json"
 
-LEVEL_RULES = [
-    ("(aaa",                "AAA"),
-    ("(aa",                 "AA"),
-    ("(a+",                 "High-A"),
-    ("(a__kc)",             "Low-A"),
-    ("(acl)",               "Rookie-ACL"),
-    ("dsl_royals_fortuna",  "Rookie-DSL1"),
-    ("dsl_royals_ventura",  "Rookie-DSL2"),
-    ("(dsl)",               "Rookie-DSL"),
-]
-
-LEVEL_ORDER = ["Rookie-DSL1", "Rookie-DSL2", "Rookie-DSL", "Rookie-ACL",
-               "Low-A", "High-A", "AA", "AAA"]
-
-BAT_TOOLS = ["CON P", "HT P", "GAP P", "POW P", "EYE P"]
-PIT_TOOLS = ["STU P", "MOV P", "CON P"]
-
-
-def detect_level(filename: str) -> str:
-    name = filename.lower()
-    for key, level in LEVEL_RULES:
-        if key in name:
-            return level
+# Map Lev + LG columns to display level names
+def map_level(row):
+    lev = str(row.get("Lev", "")).strip()
+    lg = str(row.get("LG", "")).strip()
+    if lev == "MLB":
+        return "MLB"
+    if lev == "AAA":
+        return "AAA"
+    if lev == "AA":
+        return "AA"
+    if lev == "A+":
+        return "High-A"
+    if lev == "A":
+        return "Low-A"
+    if lev == "R":
+        if lg == "DSL":
+            return "Rookie-DSL"
+        return "Rookie-ACL"
     return "Unknown"
 
+LEVEL_ORDER = ["Rookie-DSL", "Rookie-ACL", "Low-A", "High-A", "AA", "AAA"]
 
-def load_csvs(pattern, tools):
-    files = sorted(CSV_FOLDER.glob(pattern))
-    frames = []
-    for f in files:
-        df = pd.read_csv(f)
-        df["Level"] = detect_level(f.name)
-        present = [c for c in tools if c in df.columns]
-        df["ToolAvg"] = df[present].mean(axis=1).round(1)
-        frames.append(df)
-    if not frames:
-        return pd.DataFrame()
-    combined = pd.concat(frames, ignore_index=True)
-    combined["_lvl"] = combined["Level"].map({l: i for i, l in enumerate(LEVEL_ORDER)}).fillna(99)
-    combined.sort_values(["_lvl", "POT", "ToolAvg"], ascending=[True, False, False], inplace=True)
-    combined.drop(columns="_lvl", inplace=True)
-    return combined
+HITTER_POS = {"C", "1B", "2B", "SS", "3B", "LF", "CF", "RF"}
+PITCHER_POS = {"SP", "RP", "CL"}
 
+# Batting tool columns (from CON/STU P and POW/MOV P combo cols + individual)
+BAT_TOOLS = ["CON P", "HT P", "GAP P", "POW P"]
+# The CSV has CON P (batting) and CON P_1 (pitching control) — for pitchers we want STU P, MOV P, CON P_1
+PIT_TOOLS = ["STU P", "MOV P", "CON P_1"]
 
-hitters = load_csvs("*batting_potential.csv", BAT_TOOLS)
-pitchers = load_csvs("*pitching_potential.csv", PIT_TOOLS)
+df = pd.read_csv(CSV_PATH)
 
-# Build output structure
-output = {"levels": LEVEL_ORDER, "hitters": [], "pitchers": [], "overview": []}
+# Add level
+df["Level"] = df.apply(map_level, axis=1)
 
+# Filter out MLB
+df = df[df["Level"] != "MLB"].copy()
+df = df[df["Level"] != "Unknown"].copy()
+
+# Split hitters vs pitchers by POS
+hitters = df[df["POS"].isin(HITTER_POS)].copy()
+pitchers = df[df["POS"].isin(PITCHER_POS)].copy()
+
+# Compute ToolAvg — batting tools for hitters, pitching tools for pitchers
+h_present = [c for c in BAT_TOOLS if c in hitters.columns]
+hitters["ToolAvg"] = hitters[h_present].mean(axis=1).round(1)
+
+p_present = [c for c in PIT_TOOLS if c in pitchers.columns]
+pitchers["ToolAvg"] = pitchers[p_present].mean(axis=1).round(1)
+
+# Rename CON P_1 -> CTL P for pitchers (pitching control)
+if "CON P_1" in pitchers.columns:
+    pitchers = pitchers.rename(columns={"CON P_1": "CTL P"})
+
+# Sort by level order, then POT desc, then ToolAvg desc
+for frame in [hitters, pitchers]:
+    frame["_lvl"] = frame["Level"].map({l: i for i, l in enumerate(LEVEL_ORDER)}).fillna(99)
+    frame.sort_values(["_lvl", "POT", "ToolAvg"], ascending=[True, False, False], inplace=True)
+    frame.drop(columns="_lvl", inplace=True)
+
+# Columns to export
 bat_cols = ["Level", "POS", "#", "Name", "Age", "B", "T", "POT", "ToolAvg",
-            "CON P", "HT P", "K P", "GAP P", "POW P", "EYE P", "SPE", "STE", "RUN", "DEF", "SctAcc"]
+            "CON P", "HT P", "GAP P", "POW P", "SctAcc"]
 pit_cols = ["Level", "POS", "#", "Name", "Age", "B", "T", "POT", "ToolAvg",
-            "STU P", "MOV P", "HRA P", "PBABIP P", "CON P", "VELO", "STM", "G/F", "HLD", "SctAcc"]
+            "STU P", "MOV P", "CTL P", "PBABIP P", "VT", "SctAcc"]
+
+output = {"levels": LEVEL_ORDER, "hitters": [], "pitchers": [], "overview": []}
 
 for _, row in hitters.iterrows():
     output["hitters"].append({c: (row[c] if pd.notna(row.get(c)) else "") for c in bat_cols if c in row.index})
@@ -89,7 +103,6 @@ for level in LEVEL_ORDER:
     })
 
 def convert(obj):
-    import numpy as np
     if isinstance(obj, (np.integer,)):
         return int(obj)
     if isinstance(obj, (np.floating,)):

@@ -463,10 +463,10 @@ function flagBadge(flag: Flag) {
 
 type Tab = "overview" | "hitters" | "pitchers" | "top" | "algo" | "insights";
 
-const BAT_TOOL_COLS = ["CON P", "HT P", "K P", "GAP P", "POW P", "EYE P"];
-const PIT_TOOL_COLS = ["STU P", "MOV P", "HRA P", "PBABIP P", "CON P"];
-const BAT_EXTRA = ["SPE", "DEF"];
-const PIT_EXTRA = ["VELO", "STM", "HLD"];
+const BAT_TOOL_COLS = ["CON P", "HT P", "GAP P", "POW P"];
+const PIT_TOOL_COLS = ["STU P", "MOV P", "CTL P", "PBABIP P"];
+const BAT_EXTRA = ["SctAcc"];
+const PIT_EXTRA = ["VT", "SctAcc"];
 
 export default function Home() {
   const [tab, setTab] = useState<Tab>("algo");
