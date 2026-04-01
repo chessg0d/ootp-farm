@@ -461,7 +461,7 @@ function flagBadge(flag: Flag) {
   );
 }
 
-type Tab = "overview" | "hitters" | "pitchers" | "top" | "algo" | "insights";
+type Tab = "overview" | "hitters" | "pitchers" | "top" | "algo" | "insights" | "moves";
 
 const BAT_TOOL_COLS = ["CON P", "HT P", "GAP P", "POW P"];
 const PIT_TOOL_COLS = ["STU P", "MOV P", "CTL P", "PBABIP P"];
@@ -481,6 +481,7 @@ export default function Home() {
   );
 
   const analysis = useMemo(() => analyzeOrg(data.hitters, data.pitchers), []);
+  const { reports: levelReports, transfers: orgTransfers } = useMemo(() => buildLevelReports(data.hitters, data.pitchers), []);
 
   const filteredHitters = useMemo(() => {
     return data.hitters.filter((p) => {
@@ -538,7 +539,7 @@ export default function Home() {
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 bg-g-card border border-g-border rounded-lg p-1 w-fit">
-        {(["algo", "insights", "overview", "top", "hitters", "pitchers"] as Tab[]).map((t) => (
+        {(["algo", "moves", "insights", "overview", "top", "hitters", "pitchers"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => { setTab(t); setPosFilter("All"); }}
@@ -548,7 +549,7 @@ export default function Home() {
                 : "text-txt-secondary hover:text-txt hover:bg-g-hover"
             }`}
           >
-            {t === "algo" ? "Algo" : t === "insights" ? "Insights" : t === "overview" ? "Overview" : t === "top" ? "Top Prospects" : t === "hitters" ? "Hitters" : "Pitchers"}
+            {{algo: "Algo", moves: "Moves", insights: "Insights", overview: "Overview", top: "Top Prospects", hitters: "Hitters", pitchers: "Pitchers"}[t]}
           </button>
         ))}
       </div>
@@ -583,7 +584,8 @@ export default function Home() {
       )}
 
       {tab === "algo" && <AlgoTab analysis={analysis} cutSet={cutSet} />}
-      {tab === "insights" && <InsightsTab analysis={analysis} hitters={data.hitters} pitchers={data.pitchers} cutSet={cutSet} />}
+      {tab === "moves" && <MovesTab levelReports={levelReports} orgTransfers={orgTransfers} analysis={analysis} cutSet={cutSet} />}
+      {tab === "insights" && <InsightsTab analysis={analysis} hitters={data.hitters} pitchers={data.pitchers} cutSet={cutSet} levelReports={levelReports} orgTransfers={orgTransfers} />}
       {tab === "overview" && <OverviewTab overview={data.overview} />}
 
       {tab === "top" && (
@@ -1319,12 +1321,14 @@ function buildLevelReports(hitters: Player[], pitchers: Player[]): { reports: Le
 }
 
 function InsightsTab({
-  analysis, hitters, pitchers, cutSet,
+  analysis, hitters, pitchers, cutSet, levelReports, orgTransfers,
 }: {
   analysis: ReturnType<typeof analyzeOrg>;
   hitters: Player[];
   pitchers: Player[];
   cutSet: CutSet;
+  levelReports: LevelReport[];
+  orgTransfers: Transfer[];
 }) {
   const allPlayers = useMemo(() => [...hitters, ...pitchers], [hitters, pitchers]);
 
@@ -1337,9 +1341,6 @@ function InsightsTab({
   const solidTier = useMemo(() =>
     allPlayers.filter((p) => (p.POT as number) >= 50 && (p.POT as number) < 60).sort((a, b) => (b.POT as number) - (a.POT as number)),
   [allPlayers]);
-
-  // Per-level reports + org-wide transfers
-  const { reports: levelReports, transfers: orgTransfers } = useMemo(() => buildLevelReports(hitters, pitchers), [hitters, pitchers]);
 
   const totalIssues = levelReports.reduce((s, r) => s + r.issues.length, 0);
 
@@ -1699,6 +1700,172 @@ function InsightsTab({
           })}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+// MOVES TAB
+// ════════════════════════════════════════════════════════════
+
+function MovesTab({
+  levelReports, orgTransfers, analysis, cutSet,
+}: {
+  levelReports: LevelReport[];
+  orgTransfers: Transfer[];
+  analysis: ReturnType<typeof analyzeOrg>;
+  cutSet: CutSet;
+}) {
+  // Collect ALL actions from all levels
+  const allActions = useMemo(() => {
+    const moves: { category: string; categoryColor: string; items: string[] }[] = [];
+
+    // 1. Org-wide transfers (promote/demote)
+    if (orgTransfers.length > 0) {
+      moves.push({
+        category: "Transfers",
+        categoryColor: "text-blue-400",
+        items: orgTransfers.map((t) => t.reason),
+      });
+    }
+
+    // 2. Releases from cut list
+    if (analysis.cutList.length > 0) {
+      // Group by level
+      const byLevel: Record<string, string[]> = {};
+      for (const p of analysis.cutList.sort((a, b) => (a.POT as number) - (b.POT as number))) {
+        const lv = p.Level as string;
+        if (!byLevel[lv]) byLevel[lv] = [];
+        byLevel[lv].push(`${p.Name} (${p.POS}, Age ${p.Age}, POT ${p.POT})`);
+      }
+      const releaseItems: string[] = [];
+      for (const lv of Object.keys(byLevel)) {
+        releaseItems.push(`${lv}: Release ${byLevel[lv].join(", ")}.`);
+      }
+      moves.push({
+        category: "Releases",
+        categoryColor: "text-red-400",
+        items: releaseItems,
+      });
+    }
+
+    // 3. Per-level specific actions (excluding SEND/RECEIVE which are already in transfers)
+    const levelActions: string[] = [];
+    for (const report of levelReports) {
+      for (const action of report.actions) {
+        if (action.startsWith("SEND:") || action.startsWith("RECEIVE:")) continue;
+        levelActions.push(`${report.level}: ${action}`);
+      }
+    }
+    if (levelActions.length > 0) {
+      moves.push({
+        category: "Roster Fixes",
+        categoryColor: "text-orange-400",
+        items: levelActions,
+      });
+    }
+
+    // 4. Promotions from analysis
+    if (analysis.promoteCandidates.length > 0) {
+      moves.push({
+        category: "Additional Promotions",
+        categoryColor: "text-green-400",
+        items: analysis.promoteCandidates
+          .filter((p) => !orgTransfers.some((t) => playerKey(t.player) === playerKey(p)))
+          .sort((a, b) => (b.POT as number) - (a.POT as number))
+          .map((p) => {
+            const reason = p.flags.find((f: Flag) => f.tag === "PROMOTE");
+            return `${p.Name} (${p.POS}, POT ${p.POT}, Age ${p.Age}) at ${p.Level}${reason ? " — " + reason.msg : ""}.`;
+          }),
+      });
+    }
+
+    return moves.filter((m) => m.items.length > 0);
+  }, [levelReports, orgTransfers, analysis]);
+
+  const totalMoves = allActions.reduce((s, a) => s + a.items.length, 0);
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-g-card border border-g-border rounded-xl p-6">
+        <div className="text-txt-muted text-[11px] uppercase tracking-wider mb-1">Action Plan</div>
+        <p className="text-[15px] text-txt-secondary mt-2 leading-relaxed">
+          {totalMoves} total moves to optimize the farm system. Transfers rebalance position depth across levels, releases clear dead weight, and roster fixes address level-specific issues.
+        </p>
+      </div>
+
+      {allActions.map((section, si) => (
+        <div key={si} className="bg-g-card border border-g-border rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <h2 className={`text-[15px] font-semibold ${section.categoryColor}`}>{section.category}</h2>
+            <span className={`text-[12px] ${section.categoryColor} bg-g-subtle border border-g-border px-2 py-0.5 rounded-full`}>
+              {section.items.length}
+            </span>
+          </div>
+          <div className="space-y-2">
+            {section.items.map((item, i) => {
+              // For releases, add cut buttons
+              if (section.category === "Releases") {
+                return (
+                  <div key={i} className="text-[13px] bg-red-500/5 border border-red-500/10 rounded-lg px-4 py-2.5 leading-relaxed">
+                    <span className="text-txt-secondary">{item}</span>
+                  </div>
+                );
+              }
+              const color = section.category === "Transfers"
+                ? item.startsWith("Promote") ? "bg-blue-500/5 border-blue-500/10" : "bg-orange-500/5 border-orange-500/10"
+                : section.category === "Roster Fixes"
+                ? "bg-orange-500/5 border-orange-500/10"
+                : "bg-green-500/5 border-green-500/10";
+              return (
+                <div key={i} className={`text-[13px] border rounded-lg px-4 py-2.5 leading-relaxed ${color}`}>
+                  <span className="text-txt-secondary">{item}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
+      {/* Quick cut checklist */}
+      {analysis.cutList.length > 0 && (
+        <div className="bg-g-card border border-g-border rounded-xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-[15px] font-semibold text-red-400">Cut Checklist</h2>
+            {cutSet.count > 0 && (
+              <div className="flex items-center gap-3">
+                <span className="text-[13px] text-txt-muted">{cutSet.count} / {analysis.cutList.length} marked</span>
+                <button
+                  onClick={cutSet.clearAll}
+                  className="text-[12px] text-txt-muted hover:text-txt border border-g-border rounded-md px-2 py-1 hover:bg-g-hover transition-colors"
+                >
+                  Reset
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="space-y-1">
+            {analysis.cutList
+              .sort((a, b) => (a.POT as number) - (b.POT as number) || (b.Age as number) - (a.Age as number))
+              .map((p, i) => {
+                const isCut = cutSet.cuts.has(playerKey(p));
+                return (
+                  <div
+                    key={i}
+                    className={`flex items-center gap-3 text-[13px] rounded-lg px-3 py-1.5 transition-colors ${isCut ? "opacity-40" : "hover:bg-g-hover/30"}`}
+                  >
+                    <CutBtn player={p} cutSet={cutSet} />
+                    <span className={`font-medium flex-1 ${isCut ? "line-through" : ""}`}>{p.Name as string}</span>
+                    <span className="text-txt-muted text-[12px]">{p.Level as string}</span>
+                    <span className="bg-g-subtle px-1.5 py-0.5 rounded text-[10px] font-medium">{p.POS as string}</span>
+                    <span className="text-txt-muted text-[12px]">Age {p.Age as number}</span>
+                    <span className={`text-[12px] ${potColor(p.POT as number)}`}>POT {p.POT as number}</span>
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
